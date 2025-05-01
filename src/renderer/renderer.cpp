@@ -9,75 +9,208 @@
 
 static std::vector<utils::GaussianDataSSBO> sampleTriangleCPU_Internal(
     const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& p2,
-    int m /* sampling density */, float scaleFactor /* New parameter */) // Add scaleFactor
+    int m /* sampling density */, float scaleFactor)
 {
     std::vector<utils::GaussianDataSSBO> out;
-    if (m <= 0) return out; // Avoid division by zero and unnecessary work
-
-    out.reserve((m + 1) * (m + 2) / 2);
+    if (m <= 0) return out;
 
     glm::vec3 e1 = p1 - p0;
     glm::vec3 e2 = p2 - p0;
     glm::vec3 n = glm::normalize(glm::cross(e1, e2));
+    if (glm::length(n) < 1e-6f) return out;
 
-    // Check for degenerate triangles
-    if (glm::length(n) < 1e-6f) {
-        return out; // Skip degenerate triangles
-    }
-
-    // Orthonormal basis X,Y,Z (Z = normal)
+    // Orthonormal basis
     glm::vec3 X = glm::normalize(e1);
-    // Handle potential collinearity of e1 and e2 leading to zero cross product
     glm::vec3 Y_candidate = glm::cross(n, X);
     if (glm::length(Y_candidate) < 1e-6f) {
-         // If n and X are parallel (e.g., e1 is zero length), create an arbitrary orthogonal vector
         glm::vec3 arbitrary_non_parallel = (abs(n.x) < 0.9f) ? glm::vec3(1,0,0) : glm::vec3(0,1,0);
         Y_candidate = glm::normalize(glm::cross(n, arbitrary_non_parallel));
-        X = glm::normalize(glm::cross(Y_candidate, n)); // Recompute X to ensure orthogonality
+        X = glm::normalize(glm::cross(Y_candidate, n));
     }
-     glm::vec3 Y = glm::normalize(Y_candidate);
-
-
+    glm::vec3 Y = glm::normalize(Y_candidate);
     glm::mat3 basis(X, Y, n);
     glm::quat Q = glm::quat_cast(basis);
 
-    // Apply scaleFactor here
     float su = (glm::length(e1) / float(m)) * scaleFactor;
-    // Perpendicular component of e2 w.r.t X for isotropy in tangent plane
     glm::vec3 e2_perp = e2 - glm::dot(e2, X) * X;
     float sv = (glm::length(e2_perp) / float(m)) * scaleFactor;
-
-    // --- Make Gaussians isotropic (circular) ---
-    float avg_scale = (su + sv) * 0.5f; // Calculate average scale
-    // Use a small epsilon for scale, avoid zero or negative scales
-    // Use avg_scale for both X and Y components
+    float avg_scale = (su + sv) * 0.5f;
     glm::vec3 S(avg_scale > 1e-7f ? avg_scale : 1e-7f,
                 avg_scale > 1e-7f ? avg_scale : 1e-7f,
-                1e-7f); // Keep Z scale minimal
+                1e-7f);
 
-    for (int u = 0; u <= m; ++u)
-    {
-        for (int v = 0; v <= m - u; ++v)
-        {
-            float fu = float(u) / m;
-            float fv = float(v) / m;
-            float fw = 1.0f - fu - fv;
-
-            glm::vec3 P = fw * p0 + fu * p1 + fv * p2;
-
-            utils::GaussianDataSSBO g;
-            g.position = glm::vec4(P, 1.0f);
-            g.scale = glm::vec4(S, 0.0f); // Use pre-calculated scale S
-            g.normal = glm::vec4(n, 0.0f);
-            g.rotation = glm::vec4(Q.w, Q.x, Q.y, Q.z);
-            g.color = glm::vec4(0.8f, 0.8f, 0.8f, 1.0f);
-            g.pbr = glm::vec4(0.0f, 0.5f, 0.0f, 0.0f);
-
-            out.push_back(g);
+    // Step 1: Generate grid of barycentric-sampled points
+    std::map<std::pair<int, int>, glm::vec3> grid;
+    for (int i = 0; i <= m; ++i) {
+        for (int j = 0; j <= m - i; ++j) {
+            float u = float(i) / m;
+            float v = float(j) / m;
+            float w = 1.0f - u - v;
+            glm::vec3 point = w * p0 + u * p1 + v * p2;
+            grid[{i, j}] = point;
         }
     }
+
+    // Step 2: Iterate over sub-triangles and compute incenters
+    for (int i = 0; i < m; ++i) {
+        for (int j = 0; j < m - i; ++j) {
+            glm::vec3 A = grid[{i, j}];
+            glm::vec3 B = grid[{i + 1, j}];
+            glm::vec3 C = grid[{i, j + 1}];
+
+            // First triangle
+            glm::vec3 incenter1;
+            {
+                float a = glm::length(B - C);
+                float b = glm::length(A - C);
+                float c = glm::length(A - B);
+                incenter1 = (a * A + b * B + c * C) / (a + b + c);
+            }
+
+            utils::GaussianDataSSBO g1;
+            g1.position = glm::vec4(incenter1, 1.0f);
+            g1.scale = glm::vec4(S, 0.0f);
+            g1.normal = glm::vec4(n, 0.0f);
+            g1.rotation = glm::vec4(Q.w, Q.x, Q.y, Q.z);
+            g1.color = glm::vec4(0.8f, 0.8f, 0.8f, 1.0f);
+            g1.pbr = glm::vec4(0.0f, 0.5f, 0.0f, 0.0f);
+            out.push_back(g1);
+
+            // Second triangle if applicable
+            if (i + j < m - 1) {
+                glm::vec3 D = grid[{i + 1, j + 1}];
+                glm::vec3 incenter2;
+                {
+                    float a = glm::length(D - C);
+                    float b = glm::length(B - C);
+                    float c = glm::length(B - D);
+                    incenter2 = (a * B + b * D + c * C) / (a + b + c);
+                }
+
+                utils::GaussianDataSSBO g2;
+                g2.position = glm::vec4(incenter2, 1.0f);
+                g2.scale = glm::vec4(S, 0.0f);
+                g2.normal = glm::vec4(n, 0.0f);
+                g2.rotation = glm::vec4(Q.w, Q.x, Q.y, Q.z);
+                g2.color = glm::vec4(0.8f, 0.8f, 0.8f, 1.0f);
+                g2.pbr = glm::vec4(0.0f, 0.5f, 0.0f, 0.0f);
+                out.push_back(g2);
+            }
+        }
+    }
+
     return out;
 }
+
+// Rasterization-based sampling approach
+static std::vector<utils::GaussianDataSSBO> sampleTriangleCPU_Rasterization(
+    const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& p2,
+    int m /* sampling density */, float scaleFactor)
+{
+    std::vector<utils::GaussianDataSSBO> out;
+    if (m <= 0) return out;
+
+    glm::vec3 e1 = p1 - p0;
+    glm::vec3 e2 = p2 - p0;
+    glm::vec3 n = glm::normalize(glm::cross(e1, e2));
+    if (glm::length(n) < 1e-6f) return out; // Degenerate triangle
+
+    // --- Calculate Orthonormal Basis and Scale ---
+    glm::vec3 X = glm::normalize(e1);
+    glm::vec3 Y_candidate = glm::cross(n, X);
+     // Handle cases where e1 is parallel to n (shouldn't happen for non-degenerate triangles, but safety check)
+    if (glm::length(Y_candidate) < 1e-6f) {
+        // If e1 is zero length or parallel to normal, pick an arbitrary perpendicular
+        glm::vec3 arbitrary_non_parallel = (abs(n.x) < 0.9f) ? glm::vec3(1,0,0) : glm::vec3(0,1,0);
+        X = glm::normalize(glm::cross(arbitrary_non_parallel, n)); // Recalculate X
+        Y_candidate = glm::normalize(glm::cross(n, X));
+    }
+    glm::vec3 Y = glm::normalize(Y_candidate);
+    glm::mat3 basis(X, Y, n);
+    glm::quat Q = glm::quat_cast(basis);
+
+    // Project vertices onto the triangle's 2D plane (using the basis)
+    // p0 projects to origin (0,0)
+    glm::vec2 p1_2D(glm::dot(e1, X), glm::dot(e1, Y));
+    glm::vec2 p2_2D(glm::dot(e2, X), glm::dot(e2, Y));
+
+    // --- Determine Sampling Grid and Gaussian Scale ---
+    // Use a similar scale calculation as the barycentric method for consistency
+    float su = (glm::length(e1) / float(m)); // Base size along e1
+    glm::vec3 e2_perp = e2 - glm::dot(e2, X) * X;
+    float sv = (glm::length(e2_perp) / float(m)); // Base size along perpendicular to e1 in plane
+    float sampleStep = (su + sv) * 0.5f; // Average step size for the grid
+
+    if (sampleStep < 1e-7f) return out; // Avoid division by zero or tiny steps
+
+    float gaussianScaleXY = sampleStep * scaleFactor;
+    glm::vec3 S(gaussianScaleXY > 1e-7f ? gaussianScaleXY : 1e-7f,
+                gaussianScaleXY > 1e-7f ? gaussianScaleXY : 1e-7f,
+                1e-7f); // Keep Z scale minimal
+
+    // --- Calculate 2D Bounding Box ---
+    float minX = std::min({0.0f, p1_2D.x, p2_2D.x});
+    float maxX = std::max({0.0f, p1_2D.x, p2_2D.x});
+    float minY = std::min({0.0f, p1_2D.y, p2_2D.y});
+    float maxY = std::max({0.0f, p1_2D.y, p2_2D.y});
+
+    // --- Iterate through Bounding Box Grid ---
+    // Helper function to check if a 2D point is inside the 2D triangle using barycentric coordinates
+    auto isInside = [&](const glm::vec2& pt) -> std::tuple<bool, float, float, float> {
+        glm::vec2 v0 = p1_2D; // p1 relative to p0
+        glm::vec2 v1 = p2_2D; // p2 relative to p0
+        glm::vec2 v2 = pt;    // point relative to p0
+        float d00 = glm::dot(v0, v0);
+        float d01 = glm::dot(v0, v1);
+        float d11 = glm::dot(v1, v1);
+        float d20 = glm::dot(v2, v0);
+        float d21 = glm::dot(v2, v1);
+        float denom = d00 * d11 - d01 * d01;
+        if (std::abs(denom) < 1e-7f) return {false, 0, 0, 0}; // Degenerate case
+
+        float v = (d11 * d20 - d01 * d21) / denom; // Barycentric coord for p1
+        float w = (d00 * d21 - d01 * d20) / denom; // Barycentric coord for p2
+        float u = 1.0f - v - w;                    // Barycentric coord for p0
+
+        return {v >= 0 && w >= 0 && u >= 0, u, v, w}; // Check if inside (all coords non-negative)
+    };
+
+    // Adjust loop start/end slightly to center samples within grid cells
+    float startX = std::floor(minX / sampleStep) * sampleStep + sampleStep * 0.5f;
+    float startY = std::floor(minY / sampleStep) * sampleStep + sampleStep * 0.5f;
+
+    for (float x = startX; x <= maxX; x += sampleStep) {
+        for (float y = startY; y <= maxY; y += sampleStep) {
+            glm::vec2 samplePoint2D(x, y);
+            auto [inside, u, v, w] = isInside(samplePoint2D);
+
+            if (inside) {
+                // Project the 2D sample point back to 3D space
+                glm::vec3 samplePoint3D = p0 + samplePoint2D.x * X + samplePoint2D.y * Y;
+
+                // --- Interpolate Attributes (Example: Color, if available) ---
+                // Assuming Face struct has vertex colors: face.color[0], face.color[1], face.color[2]
+                // glm::vec3 interpolatedColor = u * face.color[0] + v * face.color[1] + w * face.color[2];
+                // If not available, use default:
+                glm::vec4 defaultColor = glm::vec4(0.8f, 0.8f, 0.8f, 1.0f);
+                // Similarly for PBR, Normals etc. if they vary per vertex
+
+                // --- Create Gaussian ---
+                utils::GaussianDataSSBO g;
+                g.position = glm::vec4(samplePoint3D, 1.0f);
+                g.scale = glm::vec4(S, 0.0f); // Use calculated scale
+                g.normal = glm::vec4(n, 0.0f); // Use face normal
+                g.rotation = glm::vec4(Q.w, Q.x, Q.y, Q.z); // Use rotation from basis
+                g.color = defaultColor; // Use default or interpolated color
+                g.pbr = glm::vec4(0.0f, 0.5f, 0.0f, 0.0f); // Default PBR
+                out.push_back(g);
+            }
+        }
+    }
+
+    return out;
+}
+
 
 //TODO: create a separete camera class, avoid it bloating and getting too messy
 
@@ -563,7 +696,8 @@ void Renderer::convertMeshToGaussiansCPU(int samplingDensity, float scaleFactor)
             const glm::vec3& p2 = face.pos[2];
 
             // Generate Gaussians for this triangle, passing the scaleFactor
-            std::vector<utils::GaussianDataSSBO> triangleGaussians = sampleTriangleCPU_Internal(p0, p1, p2, samplingDensity, scaleFactor);
+            // std::vector<utils::GaussianDataSSBO> triangleGaussians = sampleTriangleCPU_Internal(p0, p1, p2, samplingDensity, scaleFactor);
+            std::vector<utils::GaussianDataSSBO> triangleGaussians = sampleTriangleCPU_Rasterization(p0, p1, p2, samplingDensity, scaleFactor); // New Method
 
             // Add the generated Gaussians to the main list
             renderContext.readGaussians.insert(renderContext.readGaussians.end(), triangleGaussians.begin(), triangleGaussians.end());
