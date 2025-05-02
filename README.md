@@ -178,7 +178,7 @@ You may cite this work as: *Zhuang J, Hokkanen Eriksson O, TITLE (2025). C++. Av
 
 **PoC** (_2025 april 28_)
 
-We started with creating a proof of concept to see how iterpolation of a 3D triangle with verticies could be implemented in an independent application. With the use of SDL and C++ an implementation testing interpolation on two triangles, one "regular" and one rotated was created.
+We started with creating a proof of concept to see how sampling of a 3D triangle with vertices (Barycentric coordinates) could be implemented in an independent application. With the use of SDL and C++ an implementation testing sampling on two triangles, one "regular" and one rotated was created.
 
 **Implementation in mesh2splat repository** _2025 april 29_
 The next step was to integrate what we had experimented with into the mesh2splat code base. This was not an easy task since the repository was large and there was a lot of logic to understand. We decided to keep the first tests "simple" without adding texture or colors to the pipeline. This implementation was done on the CPU instead of the GPU, it is slower but easier to understand as of now.
@@ -189,7 +189,10 @@ First test
 We later experimented on other models such as Blenders Sussan model. When comparing edges with original mesh2splat method and our method you can see a difference.
 
 Original method
-![Original interpolation method](report_assets/Monkey_GPU_520x520_Corner.png)
+![Original sampling method](report_assets/Monkey_GPU_520x520_Corner.png)
 
 Our method
-![Original interpolation method](report_assets/Monkey_CPU_32f_Corner.png)
+![Original sampling method](report_assets/Monkey_CPU_32f_Corner.png)
+
+
+*https://chrischoy.github.io/research/barycentric-coordinate-for-mesh-sampling/*
