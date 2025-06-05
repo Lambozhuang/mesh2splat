@@ -84,6 +84,122 @@ void computeMaterialPropertiesAtUV(const utils::MaterialGltf& material, const gl
     outEmissive = glm::vec3(emissiveTexel) * material.emissiveFactor;
 }
 
+// Helper function to check if two Gaussians are close enough to merge
+bool shouldMergeGaussians(const utils::GaussianDataSSBO& g1, const utils::GaussianDataSSBO& g2, float threshold = 1e-6f) {
+    glm::vec3 pos1 = glm::vec3(g1.position);
+    glm::vec3 pos2 = glm::vec3(g2.position);
+    float distance = glm::length(pos1 - pos2);
+    return distance < threshold;
+}
+
+// Helper function to create rotation quaternion from normal
+glm::quat quaternionFromNormal(const glm::vec3& normal) {
+    // Default up vector (assuming Z-up coordinate system)
+    glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f);
+    
+    // If normal is too close to up vector, use a different reference
+    if (abs(glm::dot(normal, up)) > 0.99f) {
+        up = glm::vec3(0.0f, 1.0f, 0.0f); // Use Y-up instead
+    }
+    
+    // Create rotation that aligns Z-axis with the normal
+    return glm::quatLookAt(normal, up);
+}
+
+// Helper function to merge two Gaussians with weighted averaging
+utils::GaussianDataSSBO mergeGaussians(const utils::GaussianDataSSBO& g1, const utils::GaussianDataSSBO& g2) {
+    utils::GaussianDataSSBO merged;
+    
+    // Simple average for position (could use weighted average based on opacity)
+    merged.position = (g1.position + g2.position) * 0.5f;
+    
+    // Average scale
+    merged.scale = (g1.scale + g2.scale) * 0.5f;
+    
+    // Average normal and normalize
+    glm::vec3 avgNormal = glm::normalize(glm::vec3(g1.normal) + glm::vec3(g2.normal));
+    merged.normal = glm::vec4(avgNormal, 0.0f);
+    
+    // Generate rotation from the averaged normal
+    glm::quat rotQuat = quaternionFromNormal(avgNormal);
+    merged.rotation = glm::vec4(rotQuat.w, rotQuat.x, rotQuat.y, rotQuat.z);
+    
+    // Blend colors (considering opacity as weight)
+    float w1 = g1.color.a;
+    float w2 = g2.color.a;
+    float totalWeight = w1 + w2;
+    
+    if (totalWeight > 0.0f) {
+        merged.color = glm::vec4(
+            (g1.color.r * w1 + g2.color.r * w2) / totalWeight,
+            (g1.color.g * w1 + g2.color.g * w2) / totalWeight,
+            (g1.color.b * w1 + g2.color.b * w2) / totalWeight,
+            totalWeight * 0.5f  // Average opacity
+        );
+    } else {
+        merged.color = (g1.color + g2.color) * 0.5f;
+    }
+    
+    // Average PBR properties
+    merged.pbr = (g1.pbr + g2.pbr) * 0.5f;
+    
+    return merged;
+}
+
+// Function to merge overlapping Gaussians
+std::vector<utils::GaussianDataSSBO> mergeOverlappingGaussians(
+    const std::vector<utils::GaussianDataSSBO>& gaussians, 
+    float mergeThreshold = 1e-6f) {
+    
+    std::cout << "Starting Gaussian merge pass..." << std::endl;
+    std::cout << "Input Gaussians: " << gaussians.size() << std::endl;
+    
+    if (gaussians.empty()) return gaussians;
+    
+    std::vector<utils::GaussianDataSSBO> merged;
+    std::vector<bool> processed(gaussians.size(), false);
+    
+    for (size_t i = 0; i < gaussians.size(); ++i) {
+        if (processed[i]) continue;
+        
+        // Start with current Gaussian
+        utils::GaussianDataSSBO current = gaussians[i];
+        std::vector<size_t> toMerge;
+        
+        // Find all Gaussians that should be merged with this one
+        for (size_t j = i + 1; j < gaussians.size(); ++j) {
+            if (processed[j]) continue;
+            
+            if (shouldMergeGaussians(current, gaussians[j], mergeThreshold)) {
+                toMerge.push_back(j);
+            }
+        }
+        
+        // If we found Gaussians to merge
+        if (!toMerge.empty()) {
+            // Merge all overlapping Gaussians
+            for (size_t idx : toMerge) {
+                current = mergeGaussians(current, gaussians[idx]);
+                processed[idx] = true;
+            }
+            
+            // Debug output for significant merges
+            if (toMerge.size() > 1) {
+                std::cout << "Merged " << (toMerge.size() + 1) << " overlapping Gaussians at position: " 
+                         << glm::to_string(glm::vec3(current.position)) << std::endl;
+            }
+        }
+        
+        merged.push_back(current);
+        processed[i] = true;
+    }
+    
+    std::cout << "Merge complete. Output Gaussians: " << merged.size() 
+              << " (reduced by " << (gaussians.size() - merged.size()) << ")" << std::endl;
+    
+    return merged;
+}
+
 static std::vector<utils::GaussianDataSSBO> sampleTriangleCPU_Internal(
     const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& p2,
     const utils::Face& face, 
@@ -727,6 +843,13 @@ void Renderer::convertMeshToGaussiansCPU(int samplingDensity, float scaleFactor)
         }
     }
 
-    std::cout << "CPU Conversion finished. Generated " << renderContext.readGaussians.size() << " gaussians." << std::endl;
+    std::cout << "Initial Gaussian generation finished. Generated " << renderContext.readGaussians.size() << " gaussians." << std::endl;
+    
+    // Merge overlapping Gaussians
+    // Adjust the threshold based on your scale factor and sampling density
+    // float mergeThreshold = scaleFactor * 0.1f / samplingDensity;  // Adaptive threshold
+    renderContext.readGaussians = mergeOverlappingGaussians(renderContext.readGaussians);
+    
+    std::cout << "CPU Conversion finished. Final count: " << renderContext.readGaussians.size() << " gaussians." << std::endl;
     updateGaussianBuffer();
 }
