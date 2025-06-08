@@ -1,3 +1,8 @@
+# DH2323
+[Link to Project Blog](https://github.com/Lambozhuang/mesh2splat/blob/main/ProjectBlog.md)
+
+[Project Report](./DH2323ProjectReport.pdf)
+
 # Mesh2Splat
 <div align="center">
     <img src="./res/mesh2splatPipelineFinal.jpg" width="750px">
