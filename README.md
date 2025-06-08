@@ -1,4 +1,6 @@
 # DH2323
+*Oskar Hokkanen Eriksson & Jingwen Zhuang*
+
 [Link to Project Blog](https://github.com/Lambozhuang/mesh2splat/blob/main/ProjectBlog.md)
 
 [Project Report](./DH2323ProjectReport.pdf)
